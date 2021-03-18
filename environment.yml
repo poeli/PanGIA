@@ -1,0 +1,13 @@
+name: pangia
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - minimap2
+  - bwa
+  - gawk
+  - samtools
+  - pandas
+  - numpy
+  - bokeh>2

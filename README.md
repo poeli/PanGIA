@@ -1,8 +1,8 @@
 # PanGIA Bioinformatics
 
-The bioinformatics pipeline leverages BWA/Minimap2 to identify ‘where’ reads belong to provides taxonomy identification specific to strain-level. Other than community profiling, PanGIA uses two approaches to obtain a metric of confidence, one that relies on uniqueness of sequences and the other one that relies on comparing test samples with control samples (organism-basis).
+The bioinformatics pipeline leverages BWA-mem to identify ‘where’ reads belong to provides taxonomy identification specific to strain-level. Other than community profiling, PanGIA uses two approaches to obtain a metric of confidence, one that relies on uniqueness of sequences and the other one that relies on comparing test samples with control samples (organism-basis).
 
-The software associated a web-based user interface for job submission in docker and interactive result visualization for providing pathogenic information and real-time filtering results. The pipeline was tested and validated using many synthetic datasets ranging in community composition and complexity, and was successfully applied to spiked clinical samples.
+The software associated web-based user interface for job submission and interactive result visualization for providing pathogenic information and real-time filtering results. The pipeline was tested and validated using many synthetic datasets ranging in community composition and complexity, and was successfully applied to spiked clinical samples.
 
 The docker version is also available at [Docker hub](https://hub.docker.com/r/poeli/pangia). The docker container runs PanGIA-UI that provides a web-based GUI to facilitate users to analyze their datasets through PanGIA and access to results.
 
@@ -15,7 +15,6 @@ Third-party softwares:
 
 * Python >= 3.4
 * BWA >= v0.7
-* Minimap2 >= 2.1
 * samtools >= 1.8
 * GNU parallel
 
@@ -34,11 +33,11 @@ https://edge-dl.lanl.gov/PanGIA/database/
 ```
 
 1. Download taxonomy and pathogen metadata:
-    * [metadata-latest.tar.gz](https://edge-dl.lanl.gov/PanGIA/database/PanGIA_20180915_taxonomy.tar.gz)
+    * [metadata-latest.tar.gz](https://edge-dl.lanl.gov/PanGIA/database/PanGIA_20190830_taxonomy.tar.gz)
 
 2. Download BWA index(es) for reference genomes:
     * NCBI Refseq89 reference and representative genomes -- Bacteria/Archaea/Viruses (BAV) [[tar]](https://edge-dl.lanl.gov/PanGIA/database/PanGIA_20180915_NCBI_genomes_refseq89_BAV.fa.tar)
-    * NCBI Refseq89 complete genomes of CDC biothreat agents (adds) [[tar]](https://edge-dl.lanl.gov/PanGIA/database/PanGIA_20180915_NCBI_genomes_refseq89_adds.fa.tar)
+    * NCBI Refseq89 complete genomes of CDC biothreat agents (adds) [[tar]](https://edge-dl.lanl.gov/PanGIA/database/PanGIA_20190830_NCBI_genomes_refseq89_adds.fa.tar)
     * (Optional) NCBI Refseq89 genomes of Plasmodium [[tar]](https://edge-dl.lanl.gov/PanGIA/database/PanGIA_20180915_NCBI_genomes_refseq89_Plasmodium.fa.tar)
 
 3. (Optional) Download BWA indexes for host genomes:
@@ -59,26 +58,27 @@ https://edge-dl.lanl.gov/PanGIA/database/
 ```
 git clone https://github.com/poeli/pangia.git && cd pangia
 ```
-
 2. Download databases:
 ```
-curl -O https://edge-dl.lanl.gov/PanGIA/database/PanGIA_20180915_taxonomy.tar.gz
+curl -O https://edge-dl.lanl.gov/PanGIA/database/PanGIA_20190830_taxonomy.tar.gz
 curl -O https://edge-dl.lanl.gov/PanGIA/database/PanGIA_20180915_NCBI_genomes_refseq89_BAV.fa.tar
-curl -O https://edge-dl.lanl.gov/PanGIA/database/PanGIA_20180915_NCBI_genomes_refseq89_adds.fa.tar
+curl -O https://edge-dl.lanl.gov/PanGIA/database/PanGIA_20190830_NCBI_genomes_refseq89_adds.fa.tar
 curl -O https://edge-dl.lanl.gov/PanGIA/database/PanGIA_20180915_NCBI_genomes_refseq89_Human_GRCh38.p12.fa.tar
 ```
-
 3. Decompress databases. All files will be decompressed to "pangia/database" directory.
 ```
-tar -xzf PanGIA_20180915_taxonomy.tar.gz
-tar -xzf PanGIA_20180915_NCBI_genomes_refseq89_BAV.fa.tar
-tar -xzf PanGIA_20180915_NCBI_genomes_refseq89_adds.fa.tar
-tar -xzf PanGIA_20180915_NCBI_genomes_refseq89_Human_GRCh38.p12.fa.tar
+tar -zf PanGIA_20180915_NCBI_genomes_refseq89_BAV.fa.tar
+tar -zf PanGIA_20190830_NCBI_genomes_refseq89_adds.fa.tar
+tar -zf PanGIA_20180915_NCBI_genomes_refseq89_Human_GRCh38.p12.fa.tar
+tar -xzf PanGIA_20190830_taxonomy.tar.gz
 ```
 4. Enjoy.
 
 -------------------------------------------------------------------
 ## EXAMPLE USAGE
+
+Run a testing paired-end dataset against all PanGIA databases with 24 threads, use "strandalone" scoring method by default.
+
 ```
 ./pangia.py \
   -i test.1.fastq test.2.fastq\
@@ -112,9 +112,9 @@ Run dataset "test.fq" against all PanGIA databases with 24 threads, load QCB_bac
 
 0. PanGIA will cleanup the temp directory after the job is done. Run pangia.py with `--keepTemp` if you want PanGIA-VIS to display genome coverage plot.
 
-1. Install Bokeh >= v1.0.
+1. Install Bokeh > v1.0.
 ```
-conda install -c bokeh bokeh
+conda install bokeh
 ```
 2. Run `pangia-vis.pl` with PanGIA result file (*.result.tsv). For example:
 ```

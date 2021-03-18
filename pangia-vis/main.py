@@ -1,36 +1,72 @@
 __name__      = "PanGIA-VIS: PanGIA result visualization tool"
 __author__    = "Po-E (Paul) Li, Bioscience Division, Los Alamos National Laboratory"
-__version__   = "1.0.0-RC3"
+__version__   = "1.0.0"
 __date__      = "2018/09/10"
+__update__    = "2021/01/27"
 __copyright__ = "BSDv3"
 
 import pandas as pd
 import numpy as np
 import sys
 import os
+import json
 from math import pi
 from operator import itemgetter
 import re
+import hashlib
 from os.path import dirname, join, isfile
 from bokeh.plotting import curdoc, figure
-from bokeh.layouts import row, layout, widgetbox, column
+from bokeh.layouts import row, layout, column
 from bokeh.models import ColumnDataSource, HoverTool, Div, FactorRange, Range1d, TapTool, CustomJS
 from bokeh.models.widgets import Button, Slider, Select, TextInput, RadioButtonGroup, DataTable, TableColumn, NumberFormatter, Panel, Tabs
-from bokeh.models.callbacks import CustomJS
 from bokeh.palettes import RdYlBu11, Spectral4, Spectral11, Set1
 from bokeh.util import logconfig
 
 ###############################################################################
-# default cutoffs for dot-plot display and init variables
+# default config
 ###############################################################################
-def_val_patho      = 0     #display mode: 0 -> pathogen only, 1 -> all
-def_val_min_len    = 50    #Minimum linear length [0-500] step=1
-def_val_min_cov    = 0.01  #Minimum genome coverage [0-1] step=0.01
-def_val_max_r_raw  = 100   #Minimum reads [0-500] step=1
-def_val_max_r_rsnb = 10    #Minimum reads [0-100] step=1
-def_val_min_score  = 0.5   #Minimum score [0-1] step=0.1
-def_val_min_dc     = 10    #Minimum depth coverage MilliX (1X=1000mX) [0-10000] step=10
-def_val_min_rsdc   = 1     #Minimum rank specific depth coverage in MilliX[0-1000] step=0.001
+config_file = join(dirname(__file__), "config.json")
+config = {}
+config['cutoffs']={}
+
+config['cutoffs']['def_val_patho']      = True  #display mode: 0 -> pathogen only, 1 -> all
+config['cutoffs']['def_val_min_len']    = 50    #Minimum linear length [0-500] step=1
+config['cutoffs']['def_val_min_cov']    = 0.01  #Minimum genome coverage [0-1] step=0.01
+config['cutoffs']['def_val_max_r_raw']  = 100   #Minimum reads [0-500] step=1
+config['cutoffs']['def_val_max_r_rsnb'] = 10    #Minimum reads [0-100] step=1
+config['cutoffs']['def_val_min_score']  = 0.5   #Minimum score [0-1] step=0.1
+config['cutoffs']['def_val_min_dc']     = 10    #Minimum depth coverage MilliX (1X=1000mX) [0-10000] step=10
+config['cutoffs']['def_val_min_rsdc']   = 1     #Minimum rank specific depth coverage in MilliX[0-1000] step=0.001
+
+config['displays']={}
+config['displays']['total_width']       = 1070  #display mode: 0 -> pathogen only, 1 -> all
+config['displays']['dot_plot_width']    = 800   #Minimum linear length [0-500] step=1
+config['displays']['dot_plot_height']   = 800   #display mode: 0 -> pathogen only, 1 -> all
+config['displays']['gcov_plot_width']   = 1060  #display mode: 0 -> pathogen only, 1 -> all
+config['displays']['gcov_plot_height']  = 190   #display mode: 0 -> pathogen only, 1 -> all
+config['displays']['read_plot_width']   = 270  #display mode: 0 -> pathogen only, 1 -> all
+config['displays']['read_plot_height']  = 210   #display mode: 0 -> pathogen only, 1 -> all
+
+config['displays']['output_backend']    = 'canvas' #Minimum linear length [0-500] step=1
+
+try:
+    config_json = open(config_file, 'r').read()
+    config = json.loads(config_json)
+    logconfig.bokeh_logger.debug(f"[INFO] [CONFIG] {config_file} loaded.")
+except:
+    logconfig.bokeh_logger.debug(f"[INFO] [CONFIG] {config_file} NOT loaded.")
+
+config['displays']['dashboard_pie_width']  = int(config['displays']['total_width']/2.8)
+config['displays']['dashboard_pie_height'] = int(config['displays']['dashboard_pie_width']/380*220)
+
+###############################################################################
+# init variables
+###############################################################################
+r_path = ""                # result tsv file path
+tsv_md5sum = ""            # result tsv md5sum
+res_df = pd.DataFrame()    # parsed result tsv to dataframe
+refresh_period = 0         # refresh period in seconds
+banner_div = Div(text="", width=800)  # default page
 
 COLORS = RdYlBu11 #RdYlBu11
 C_SET1 = Set1[9]
@@ -60,7 +96,14 @@ if len(sys.argv) > 1:
     if isfile(r_file):
         logconfig.bokeh_logger.debug("[DEBUG] [INPUT] Input file by sys argv: %s"%r_file)
     else:
-        exit("[ERROR] Input file by sys argv: not found.")
+        logconfig.bokeh_logger.debug("[DEBUG] [ERROR] Input file not found: %s"%r_file)
+        r_file = ""
+        # exit("[ERROR] Input file by sys argv: not found.")
+
+    try:
+        refresh_period = int(sys.argv[2])
+    except:
+        refresh_period = 0
 
     try:
         r_file_fn = r_file.split('/')[-1].split('.')[0]
@@ -79,23 +122,27 @@ if not r_file:
             exit("[ERROR] Input file by URL: not found.")
         
         try:
+            refresh_period = int(args.get('refresh')[0].decode("utf-8"))*1000
+        except:
+            refresh_period = 0
+
+        try:
             proj_name = "(%s)"%args.get('p')[0].decode("utf-8")
         except:
             logconfig.bokeh_logger.debug("[DEBUG] [INPUT] No project name found (p).")
     except:
-        exit("[ERROR] No PanGIA result provided.")
+        banner_div.text = """
+            <H1>PanGIA Bioinformatics</H1>
+            <H3>No result loaded.</H3>
+            <img src="pangia-vis/static/images/hbo.png" alt="Not able to load result" />
+            """
+        logconfig.bokeh_logger.debug("[DEBUG] [ERROR] No PanGIA result provided.")
 
 # get file path + prefix
-r_path = r_file.split('.')[0]
-
-# load data and cleanup
-res_df = pd.read_csv(r_file, sep='\t')
-res_df = res_df.replace('NA', np.nan)
-res_df = res_df.fillna(0)
-res_df['NAME'] = res_df['NAME'].str.replace(":", " ")
-res_df['PATHOGEN'] = res_df['PATHOGEN'].apply(str)
-
-logconfig.bokeh_logger.debug("[DEBUG] [INPUT] Done loading input file.")
+if r_file.endswith('.report.tsv'):
+    r_path = r_file.replace('.report.tsv', '')
+else:
+    r_path = r_file.replace('.tsv', '')
 
 ###############################################################################
 # dot plot
@@ -153,10 +200,13 @@ hover = HoverTool(tooltips=[
     ("Pathogen", "@pathogen"),
 ])
 
-p = figure(plot_height=800, plot_width=800, title="", y_axis_type="log",
+p = figure(
+    plot_height=config['displays']['dot_plot_height'], 
+    plot_width=config['displays']['dot_plot_width'], 
+    title="", y_axis_type="log",
     toolbar_location="below", toolbar_sticky=False, 
     x_range=FactorRange(), y_range=Range1d(),
-    output_backend="webgl",
+    output_backend=config['displays']['output_backend'],
     tools=["pan,wheel_zoom,box_zoom,reset,tap",hover]
 )
 
@@ -179,29 +229,46 @@ pieHover = HoverTool(
     ])
 
 pieInReadsDS = ColumnDataSource(data=dict( name=['NA'], start_angle=[0], end_angle=[2*pi], color=['#EFF0F1'], val=['NA'], pct=['NA']) )
-pieInReadsFigure = figure( x_range=(-1.3, 4), output_backend="webgl", y_range=(-2, 2), plot_width=380, plot_height=220, title="Total reads:", tools=[pieHover] )
+pieInReadsFigure = figure(
+    x_range=(-1.3, 4),
+    output_backend=config['displays']['output_backend'], 
+    y_range=(-2, 2), 
+    plot_width=config['displays']['dashboard_pie_width'], 
+    plot_height=config['displays']['dashboard_pie_height'], 
+    title="Total reads:", tools=[pieHover] )
 
 pieInReadsFigure.annular_wedge(
     x=0, y=0, alpha=0.7,
-    legend='name', start_angle='start_angle', end_angle='end_angle', color='color',
+    legend_field='name', start_angle='start_angle', end_angle='end_angle', color='color',
     inner_radius=0.7, outer_radius=1.2, source=pieInReadsDS)
 
 ###### Flag distribution
 pieFlagDS = ColumnDataSource(data=dict( name=['NA'], start_angle=[0], end_angle=[2*pi], color=['#EFF0F1'], val=['NA'], pct=['NA']) )
-pieFlagFigure = figure( x_range=(-1.5, 4), y_range=(-2, 2), plot_width=380, plot_height=220, title="Target reads distribution:", tools=[pieHover] )
+pieFlagFigure = figure(
+    x_range=(-1.5, 4), 
+    y_range=(-2, 2), 
+    plot_width=config['displays']['dashboard_pie_width'], 
+    plot_height=config['displays']['dashboard_pie_height'], 
+    title="Target reads distribution:", tools=[pieHover] )
 
 pieFlagFigure.annular_wedge(
     x=0, y=0, alpha=0.7,
-    legend='name', start_angle='start_angle', end_angle='end_angle', color='color',
+    legend_field='name', start_angle='start_angle', end_angle='end_angle', color='color',
     inner_radius=0.7, outer_radius=1.2, source=pieFlagDS)
 
 ###### pathogen stats
 piePathoDS = ColumnDataSource(data=dict( name=['NA'], start_angle=[0], end_angle=[2*pi], color=['#EFF0F1'], val=['NA'], pct=['NA']) )
-piePathoFigure = figure( x_range=(-1.27, 4), output_backend="webgl", y_range=(-2, 2), plot_width=380, plot_height=220, title="Pathogen reads distribution:", tools=[pieHover] )
+piePathoFigure = figure( 
+    x_range=(-1.27, 4), 
+    output_backend=config['displays']['output_backend'], 
+    y_range=(-2, 2), 
+    plot_width=config['displays']['dashboard_pie_width'], 
+    plot_height=config['displays']['dashboard_pie_height'], 
+    title="Pathogen reads distribution:", tools=[pieHover] )
 
 piePathoFigure.annular_wedge(
     x=0, y=0, alpha=0.7,
-    legend='name', start_angle='start_angle', end_angle='end_angle', color='color',
+    legend_field='name', start_angle='start_angle', end_angle='end_angle', color='color',
     inner_radius=0.7, outer_radius=1.2, source=piePathoDS
 )
 
@@ -227,8 +294,13 @@ table_cols = [
 ]
 
 #use "index_position=None" instead of "row_headers=False" on bokeh ver >0.12.10
-data_table = DataTable(source=dp_source, columns=table_cols, index_position=None, width=1070, height=200)
-result_table = widgetbox(data_table, width=1070)
+data_table = DataTable(
+    source=dp_source, 
+    columns=table_cols, 
+    index_position=None, 
+    width=config['displays']['total_width'], 
+    height=200)
+result_table = column(data_table)
 
 ###############################################################################
 # Rank specific bar chat
@@ -255,13 +327,15 @@ hover_read_idt = HoverTool(tooltips=[
 
 bar_opts = dict(line_color="white", height=0.48)
 
-rs_p = figure(plot_width=270, plot_height=210,
+rs_p = figure(
     x_axis_type="log",
     title="Rank specific read counts",
     y_range=rs_source.data['rs_rank'],
     x_range=(0.1,600), 
     toolbar_location=None,
-    output_backend="webgl",
+    output_backend=config['displays']['output_backend'],
+    plot_width=config['displays']['read_plot_width'],
+    plot_height=config['displays']['read_plot_height'],
     tools=[hover_read]
 )
 
@@ -271,13 +345,15 @@ rs_p.hbar(y="rs_rank", left='rs_rnr', right='rs_raw', color=COLORS[2], source=rs
 rs_p.xaxis.major_label_orientation = 3.1415926/4
 rs_p.toolbar.logo = None
 
-rsi_p = figure(plot_width=270, plot_height=210,
+rsi_p = figure(
     #x_axis_type="log",
     title="Average mapping identity",
     y_range=rs_source.data['rs_rank'],
     x_range=(0,1),
     toolbar_location=None,
-    output_backend="webgl",
+    output_backend=config['displays']['output_backend'],
+    plot_width=config['displays']['read_plot_width'],
+    plot_height=config['displays']['read_plot_height'],
     tools=[hover_read_idt]
 )
 rsi_p.hbar(y="rs_rank", left=0, right='rs_ri', color=COLORS[9], source=rs_source, **bar_opts)
@@ -335,26 +411,26 @@ mask_source = ColumnDataSource(data=dict(
 ))
 
 coverage_p_log = figure(
-    plot_width=1060,
-    plot_height=190,
+    plot_width=config['displays']['gcov_plot_width'],
+    plot_height=config['displays']['gcov_plot_height'],
     min_border=0,
     y_axis_label='Depth (x)',
     #x_range=(1, 1000),
-    #y_range=(0.1, 100),
-    output_backend="webgl",
+    y_range=(0.1, 100),
+    output_backend=config['displays']['output_backend'],
     y_axis_type="log",
     title='Not available at this rank (strain only)',
     tools=["wheel_zoom,box_zoom,pan,reset,save",hover_gcov,hover_bsat,hover_mask]
 )
 
 coverage_p_lin = figure(
-    plot_width=1060,
-    plot_height=190,
+    plot_width=config['displays']['gcov_plot_width'],
+    plot_height=config['displays']['gcov_plot_height'],
     min_border=0,
     y_axis_label='Depth (x)',
     #x_range=(1, 1000),
     #y_range=(0.1, 100),
-    output_backend="webgl",
+    output_backend=config['displays']['output_backend'],
     title='Not available at this rank (strain only)',
     tools=["wheel_zoom,box_zoom,pan,reset,save",hover_gcov,hover_bsat,hover_mask]
 )
@@ -471,8 +547,8 @@ def setupPieFigures( pieFigure ):
     pieFigure.outline_line_width = 0
     pieFigure.outline_line_alpha = 0
 
-def result_filter():
-    selected = res_df
+def result_filter(res_df):
+    selected = pd.DataFrame()
     if 'RS_DEPTH_COV_NR' in res_df: #backward compatibility
         selected = res_df[
             (res_df.LEVEL           == rank.value) &
@@ -499,7 +575,7 @@ def result_filter():
         if col in selected:
             selected = selected[ selected[col] > float(add_cut_v.value) ]
         else:
-            logconfig.bokeh_logger.debug("[DEBUG] [FILTER] Column %s not found."%col)
+            logconfig.bokeh_logger.debug("[DEBUG] [result_filter] Column %s not found."%col)
 
     #if patho.active == 'Pathogen Only':
     if patho.active == 0:
@@ -511,15 +587,46 @@ def result_filter():
 
     return selected
 
+def file_md5sum(fname):
+    hash_md5 = hashlib.md5()
+    with open(fname, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
+
+def load_pangia_result():
+    """
+    load data and cleanup
+    """
+    global tsv_md5sum, res_df, r_file, refresh_period
+    if refresh_period > 0:
+        md5sum = file_md5sum(r_file)
+        logconfig.bokeh_logger.debug( f"[DEBUG] [load_tsv] refresh period: {refresh_period} ms, current md5sum: {md5sum}" )
+        if md5sum != tsv_md5sum:
+            p.title.text = "Refreshing..."
+            tsv_md5sum = md5sum
+        else:
+            return True
+
+    res_df = pd.read_csv(r_file, sep='\t')
+    res_df = res_df.replace('NA', np.nan)
+    res_df = res_df.fillna(0)
+    res_df['NAME'] = res_df['NAME'].str.replace(":", " ")
+    res_df['PATHOGEN'] = res_df['PATHOGEN'].apply(str)
+
+    logconfig.bokeh_logger.debug(f"[DEBUG] [load_tsv] Done loading input file: {r_file}.")
+    update()
+    loading_log()
+
 def update():
-    df = result_filter()
+    p.title.text = "Loading..."
+    df = result_filter(res_df)
 
     y_col = cols_map[y.value]
     c_col = cols_map[color.value]
     s_col = cols_map[size.value]
 
     p.x_range.factors = []
-    p.title.text = "Loading..."
 
     if len(df):
         #init
@@ -638,7 +745,7 @@ def update():
             CLA_ri   = df['CLA_ri'].tolist() if 'CLA_ri' in df else [None]*len(c),
             PHY_ri   = df['PHY_ri'].tolist() if 'PHY_ri' in df else [None]*len(c),
             SK_ri    = df['SK_ri'].tolist()  if 'SK_ri' in df else [None]*len(c),
-            ROOT_ri  = df['ROOT_ri'].tolist() if 'ROOT_ri' in df else [None]*len(c),
+            ROOT_ri  = df['ROOT_ri'].tolist() if 'ROOT_ri' in df else [None]*len(c)
         )
     else:
         dp_source.data = dict(taxa=[],y=[],color=[],size=[])
@@ -651,12 +758,12 @@ def update():
 
 def cutoff_toggle():
     if max_r_raw.value == 0 and max_r_rsnb.value == 0 and min_cov.value == 0 and min_score.value == 0 and min_dc.value == 0 and min_rsdc.value == 0:
-        min_cov.value = def_val_min_cov
-        max_r_raw.value = def_val_max_r_raw
-        max_r_rsnb.value = def_val_max_r_rsnb
-        min_score.value = def_val_min_score
-        min_dc.value = def_val_min_dc
-        min_rsdc.value = def_val_min_rsdc
+        min_cov.value    = config['cutoffs']['def_val_min_cov']
+        max_r_raw.value  = config['cutoffs']['def_val_max_r_raw']
+        max_r_rsnb.value = config['cutoffs']['def_val_max_r_rsnb']
+        min_score.value  = config['cutoffs']['def_val_min_score']
+        min_dc.value     = config['cutoffs']['def_val_min_dc']
+        min_rsdc.value   = config['cutoffs']['def_val_min_rsdc']
     else:
         max_r_raw.value = 0
         max_r_rsnb.value = 0
@@ -671,7 +778,7 @@ def loading_log():
     logfile = r_path + ".pangia.log"
     # skip empty files
     if os.path.isfile(logfile) and os.path.getsize(logfile) > 0:
-        logconfig.bokeh_logger.debug("[DEBUG] [LOADING_LOG] Found logfile: %s"%logfile)
+        logconfig.bokeh_logger.debug("[DEBUG] [loading_log] Found logfile: %s"%logfile)
 
         info = parseLog( logfile )
         (p_name, p_str_ang, p_stp_ang, p_col, p_val, p_pct) = genPieValues( info )
@@ -688,8 +795,8 @@ def loading_log():
         for x in info:
             tol_input_reads += info[x]
     else:
-        pieInReadsFigure.title.text = "Total %s reads:"%tol_input_reads
-        logconfig.bokeh_logger.debug("[DEBUG] [LOADING_LOG] The logfile not found.")
+        pieInReadsFigure.title.text = "No input reads info"
+        logconfig.bokeh_logger.debug("[DEBUG] [loading_log] The logfile not found.")
 
 def loadBgMask(bgfiles):
     """
@@ -698,7 +805,7 @@ def loadBgMask(bgfiles):
     import gzip
     import json
 
-    logconfig.bokeh_logger.debug( "[DEBUG] [LOAD_BG] Input bgfiles: %s."%str(bgfiles) )
+    logconfig.bokeh_logger.debug( "[DEBUG] [loadBgMask] Input bgfiles: %s."%str(bgfiles) )
 
     global bg_mask
     for bgfile in bgfiles:
@@ -707,7 +814,7 @@ def loadBgMask(bgfiles):
                 bgfile = r_basepath+"/"+bgfile
             else:
                 continue
-            logconfig.bokeh_logger.debug( "[DEBUG] [LOAD_BG] try loading: %s."%bgfile )
+            logconfig.bokeh_logger.debug( "[DEBUG] [loadBgMask] try loading: %s."%bgfile )
 
         try:
             with gzip.GzipFile(bgfile, 'r') as f:
@@ -718,11 +825,11 @@ def loadBgMask(bgfiles):
                         bg_mask[ref] |= maskint
                     else:
                         bg_mask[ref] = maskint
-                logconfig.bokeh_logger.debug( "[DEBUG] [LOAD_BG] JSON file %s loaded."%bgfile )
+                logconfig.bokeh_logger.debug( "[DEBUG] [loadBgMask] JSON file %s loaded."%bgfile )
         except IOError:
-            logconfig.bokeh_logger.debug( "[DEBUG] [LOAD_BG] Failed to open background mask files: %s."%bgfile )
+            logconfig.bokeh_logger.debug( "[DEBUG] [loadBgMask] Failed to open background mask files: %s."%bgfile )
 
-    logconfig.bokeh_logger.debug( "[DEBUG] [LOAD_BG] Done loading background JSON files." )
+    logconfig.bokeh_logger.debug( "[DEBUG] [loadBgMask] Done loading background JSON files." )
 
 def update_rankspec_rc(attr, old, new):
     idx=0
@@ -821,17 +928,17 @@ def update_genome_cov(attr, old, new):
         mask_bp = 0
 
         # seting the end of x-axis
-        logconfig.bokeh_logger.debug( f"[DEBUG] [GENO_COV] x_range.end: {gsize}" )
+        logconfig.bokeh_logger.debug( f"[DEBUG] [update_genome_cov] x_range.end: {gsize}" )
         coverage_p_log.x_range.end = gsize
         coverage_p_lin.x_range.end = gsize
 
-        logconfig.bokeh_logger.debug( "[DEBUG] [GENO_COV] try loading depth file: %s."%fn )
+        logconfig.bokeh_logger.debug( "[DEBUG] [update_genome_cov] try loading depth file: %s."%fn )
         if os.path.isfile(fn) and os.path.getsize(fn) > 0:
             coverage_p_log.background_fill_color = "white"
             coverage_p_lin.background_fill_color = "white"
             # check if in the cache
             if taxid in GCOV_CACHE:
-                gcov_source.data = GCOV_CACHE[taxid]
+                gcov_source.data = dict(GCOV_CACHE[taxid])
             else:
                 coverage_p_log.title.text = f"Loading genome coverage for {name}..."
                 coverage_p_lin.title.text = f"Loading genome coverage for {name}..."
@@ -846,12 +953,12 @@ def update_genome_cov(attr, old, new):
                 for idx,ref in enumerate(ref_names):
                     ref_color[ref] = COLORS14[idx%14]
 
-                gcov_source.data = dict(
-                    gc_ref = pu['ref'].tolist(),
-                    gc_pos = pu['pos'].tolist(),
-                    gc_dep = pu['dep'].tolist(),
-                    gc_col = [ref_color[x] for x in pu['ref'].tolist()]
-                )
+                gcov_source.data = {
+                    'gc_ref': pu['ref'].tolist(),
+                    'gc_pos': pu['pos'].tolist(),
+                    'gc_dep': pu['dep'].tolist(),
+                    'gc_col': [ref_color[x] for x in pu['ref'].tolist()]
+                }
 
                 GCOV_CACHE[taxid] = gcov_source.data
 
@@ -859,16 +966,16 @@ def update_genome_cov(attr, old, new):
                 max_dep = max(gcov_source.data['gc_dep'])
                 coverage_p_log.y_range.end = max_dep*3
                 coverage_p_lin.y_range.end = max_dep*1.1
-                logconfig.bokeh_logger.debug( f"[DEBUG] [GENO_COV] Max depth: {max_dep}" )
-                logconfig.bokeh_logger.debug( f"[DEBUG] [GENO_COV] coverage_p_log.y_range.end: {coverage_p_log.y_range.end}" )
-                logconfig.bokeh_logger.debug( f"[DEBUG] [GENO_COV] coverage_p_lin.y_range.end: {coverage_p_lin.y_range.end}" )
+                logconfig.bokeh_logger.debug( f"[DEBUG] [update_genome_cov] Max depth: {max_dep}" )
+                logconfig.bokeh_logger.debug( f"[DEBUG] [update_genome_cov] coverage_p_log.y_range.end: {coverage_p_log.y_range.end}" )
+                logconfig.bokeh_logger.debug( f"[DEBUG] [update_genome_cov] coverage_p_lin.y_range.end: {coverage_p_lin.y_range.end}" )
             except:
                 pass
 
             # Background MASK coordinates
             if len(bg_mask):
                 if taxid in MASK_CACHE:
-                    mask_source.data = MASK_CACHE[taxid]
+                    mask_source.data = dict(MASK_CACHE[taxid])
                 else:
                     offset=1
                     m_ref_list=[]
@@ -890,11 +997,11 @@ def update_genome_cov(attr, old, new):
                                 m_end_list.append(rgn[1]+offset-1)
                         offset += int(leng)
                     
-                    mask_source.data = dict(
-                        m_ref = m_ref_list,
-                        m_str = m_str_list,
-                        m_end = m_end_list
-                    )
+                    mask_source.data = {
+                        'm_ref': m_ref_list,
+                        'm_str': m_str_list,
+                        'm_end': m_end_list
+                    }
 
                     # save to cache
                     MASK_CACHE[taxid] = mask_source.data
@@ -903,7 +1010,7 @@ def update_genome_cov(attr, old, new):
                 for rgn in zip(mask_source.data['m_str'], mask_source.data['m_end']):
                     mask_bp += rgn[1]-rgn[0]
                 
-                logconfig.bokeh_logger.debug( "[DEBUG] [MASK] %s -- masked region: %sbp."%(name, mask_bp) )
+                logconfig.bokeh_logger.debug( "[DEBUG] [update_genome_cov] %s -- masked region: %sbp."%(name, mask_bp) )
 
             # BSAT coordinates
             if taxid in BSAT_CACHE:
@@ -918,7 +1025,7 @@ def update_genome_cov(attr, old, new):
                 bsat = dict( b_ref = [], b_str = [], b_end = [], b_col = [], b_not = [])
 
                 for ref in pu['ref'].unique().tolist():
-                    logconfig.bokeh_logger.debug( f"[DEBUG] [BSAT] checking BSAT coordinates for {ref}..." )
+                    logconfig.bokeh_logger.debug( f"[DEBUG] [update_genome_cov] checking BSAT coordinates for {ref}..." )
                     (acc, leng, taxid, tag) = ref.split('|')
                 
                     # find available bsat file
@@ -937,9 +1044,9 @@ def update_genome_cov(attr, old, new):
                         bsat['b_end'] += (pu['end']+offset).tolist()
                         bsat['b_col'] += [note_color[x] for x in pu['note'].tolist()]
                         bsat['b_not'] += pu['note'].tolist()
-                        logconfig.bokeh_logger.debug( f"[DEBUG] [BSAT] {bsat_fn} loaded." )
+                        logconfig.bokeh_logger.debug( f"[DEBUG] [update_genome_cov] {bsat_fn} loaded." )
                     else:
-                        logconfig.bokeh_logger.debug( f"[DEBUG] [BSAT] {bsat_fn} not available." )
+                        logconfig.bokeh_logger.debug( f"[DEBUG] [update_genome_cov] {bsat_fn} not available." )
 
                     offset += int(leng)
 
@@ -1050,16 +1157,16 @@ cols_p = [
     'Relative abundance'
 ]
 
-patho      = RadioButtonGroup(labels=["Pathogen only", "All taxonomies"], active=def_val_patho)
+patho      = RadioButtonGroup(labels=["Pathogen only", "All taxonomies"], active=(0 if config['cutoffs']['def_val_patho'] else 1) )
 rank       = Select(title='Rank', value='species', options=ranks)
 coff_btn   = Button(label="No / Default extra cutoffs", button_type="success")
-#min_len    = Slider(title="Minimum linear length", start=0, end=500, value=def_val_min_len, step=1)
-min_cov    = Slider(title="Minimum genome coverage", start=0, end=1, value=def_val_min_cov, step=0.01)
-max_r_raw  = Slider(title="Minimum reads", start=0, end=500, value=def_val_max_r_raw, step=1)
-max_r_rsnb = Slider(title="Minimum reads (rsnb)", start=0, end=100, value=def_val_max_r_rsnb, step=1)
-min_score  = Slider(title="Minimum score", start=0, end=1, value=def_val_min_score, step=0.1)
-min_dc     = Slider(title="Minimum depth coverage (mX)", start=0, end=10000, value=def_val_min_dc, step=10)
-min_rsdc   = Slider(title="Minimum depth coverage (RS) (mX)", start=0, end=1000, value=def_val_min_rsdc, step=1)
+#min_len    = Slider(title="Minimum linear length", start=0, end=500, value=config['cutoffs']['def_val_min_len'], step=1)
+min_cov    = Slider(title="Minimum genome coverage", start=0, end=1, value=config['cutoffs']['def_val_min_cov'], step=0.01)
+max_r_raw  = Slider(title="Minimum reads", start=0, end=500, value=config['cutoffs']['def_val_max_r_raw'], step=1)
+max_r_rsnb = Slider(title="Minimum reads (rsnb)", start=0, end=100, value=config['cutoffs']['def_val_max_r_rsnb'], step=1)
+min_score  = Slider(title="Minimum score", start=0, end=1, value=config['cutoffs']['def_val_min_score'], step=0.1)
+min_dc     = Slider(title="Minimum depth coverage (mX)", start=0, end=10000, value=config['cutoffs']['def_val_min_dc'], step=10)
+min_rsdc   = Slider(title="Minimum depth coverage (RS) (mX)", start=0, end=1000, value=config['cutoffs']['def_val_min_rsdc'], step=1)
 add_cut_c  = Select(title="Additional cutoff field", value='None', options=cols)
 add_cut_v  = TextInput(title="Additional cutoff value")
 org_n      = TextInput(title="Organism name contains")
@@ -1078,10 +1185,17 @@ patho.on_change('active', lambda attr, old, new: update())
 for control in [controls[1]]+controls[3:-1]:
     control.on_change('value', lambda attr, old, new: update())
 
-dl_btn.callback = CustomJS(args=dict(source=dp_source), code=open(join(dirname(__file__), "download.js")).read())
+dl_btn.js_on_click(
+    CustomJS(
+        args=dict(source=dp_source), 
+        code=open(join(dirname(__file__), "static/javascript/download.js")).read()
+    )
+)
+
 coff_btn.on_click( cutoff_toggle )
 
-ctrl_panel = widgetbox(*controls, sizing_mode='fixed', width=300)
+ctrl_panel_width = config['displays']['total_width']-config['displays']['dot_plot_width']-10
+ctrl_panel = column(*controls, width=ctrl_panel_width)
 
 # update taxa info when the user adjusts filters
 dp_source.on_change('data', update_genome_cov )
@@ -1098,18 +1212,11 @@ dp_source.selected.on_change('indices', update_taxainfo)
 ###############################################################################
 
 header         = Div(text="""
-    <H1>PanGIA Bioinformatics</H1>""", width=800)
+    <H1>PanGIA Bioinformatics</H1>""", width=config['displays']['total_width'])
 
-# for top or selected record
-taxa_rec_header = Div(text="""
-    <H3>Selected organism / Top pathogen record</H3>
-    <p>The detail of selected record will be displayed in this section.</p>""", width=800)
-taxa_rec_div    = Div(text="""
-    <div class="table">
-    </div>""", width=770)
 table_header   = Div(text="""
     <H3>Overview %s</H3>
-    <p>PanGIA bioinformatics results are listed in the table below.</p>"""%proj_name, width=800)
+    <p>PanGIA bioinformatics results are listed in the table below.</p>"""%proj_name, width=config['displays']['total_width'])
 plot_header    = Div(text="""
     <H3>Exploratory</H3>
     <p>This section will display results in a dot plot associated with the control panel dynamically. The chart displays organisms vs. read count / genome coverage / score by default. Cutoffs can be adjusted using the control panel on the right. Organism name is displayed at x-axis, read count (rnr) at y-axis, genome coverage as circle size and score as color.
@@ -1132,14 +1239,23 @@ plot_header    = Div(text="""
             </tr>
             </table>
         </div>
-    </p>""", width=800)
+    </p>""", width=config['displays']['dot_plot_width'])
 
 coverage_header = Div(text="""
     <span style="display: block; font-size: 1.17em; margin-bottom: 0px; font-weight: bold;">Genome Coverage</span>"""
-, width=800)
+, width=config['displays']['total_width'])
+
+# for top or selected record
+taxa_rec_header = Div(text="""
+    <H3>Selected organism / Top pathogen record</H3>
+    <p>The detail of selected record will be displayed in this section.</p>""", width=config['displays']['total_width'])
+taxa_rec_div_width = config['displays']['total_width']-config['displays']['read_plot_width']
+taxa_rec_div = Div(text="""
+    <div class="table">
+    </div>""", width=taxa_rec_div_width)
 
 footer = Div(text="""
-    <div>PanGIA-VIS version %s</div>"""%__version__, width=1015)
+    <div>IMTV version %s</div>"""%__version__, width=config['displays']['total_width'])
 
 l = layout([
     [header],
@@ -1153,14 +1269,19 @@ l = layout([
     [taxa_rec_header],
     [taxa_rec_div, [rs_p,rsi_p]],
     [footer]
-], sizing_mode='fixed')
+])
 
-setupPieFigures( piePathoFigure )
-setupPieFigures( pieInReadsFigure )
-setupPieFigures( pieFlagFigure )
-update() # initial load of the data
-loading_log() # initiate dashboard
-loadBgMask(bgfiles) # load bg JSON file if possible
+if banner_div.text != "":
+    curdoc().add_root(banner_div)
+else:
+    setupPieFigures( piePathoFigure )
+    setupPieFigures( pieInReadsFigure )
+    setupPieFigures( pieFlagFigure )
+    load_pangia_result()
+    loadBgMask(bgfiles) # load bg JSON file if possible
 
-curdoc().add_root(l)
+    curdoc().add_root(l)
+    if refresh_period > 0:
+        curdoc().add_periodic_callback(load_pangia_result, refresh_period)
+
 curdoc().title = "PanGIA Bioinformatics"

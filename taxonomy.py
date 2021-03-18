@@ -151,13 +151,13 @@ def taxid2type( taxID ):
 	taxID = _checkTaxonomy( taxID )
 	origID = taxID
 	lastID = taxID
-	taxID = taxParents[taxID]
+	taxID = _getTaxParent(taxID)
 
-	while taxID != '1' and taxRanks[taxID] != 'species':
+	while taxID != '1' and _getTaxRank(taxID) != 'species':
 		lastID = taxID
-		taxID = taxParents[taxID]
+		taxID = _getTaxParent(taxID)
 
-	if taxRanks[taxID] != 'species':
+	if _getTaxRank(taxID) != 'species':
 		taxID = 0
 	else:
 		taxID = lastID
@@ -167,7 +167,7 @@ def taxid2type( taxID ):
 
 def taxid2parent( taxID ):
 	taxID = _checkTaxonomy( taxID )
-	taxID = taxParents[taxID]
+	taxID = _getTaxParent(taxID)
 	while taxID != '1' and taxRanks[taxID] == 'no rank':
 		taxID = taxParents[taxID]
 
@@ -360,15 +360,19 @@ def _taxid2lineage(tid, print_all_rank, print_strain, replace_space2underscore, 
 		return "|".join(lineage)
 
 def _getTaxDepth( taxID ):
+	taxID = _checkTaxonomy( taxID )
 	return taxDepths[taxID]
 
 def _getTaxName( taxID ):
+	taxID = _checkTaxonomy( taxID )
 	return taxNames[taxID]
 
 def _getTaxParent( taxID ):
+	taxID = _checkTaxonomy( taxID )
 	return taxParents[taxID]
 
 def _getTaxRank( taxID ):
+	taxID = _checkTaxonomy( taxID )
 	return taxRanks[taxID]
 
 #def loadStrainName( custom_taxonomy_file ):

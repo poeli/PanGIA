@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 __author__    = "Po-E (Paul) Li, Bioscience Division, Los Alamos National Laboratory"
-__version__   = "1.0.0-RC6.1"
+__version__   = "1.0.0"
 __date__      = "2018/12/10"
 __copyright__ = "BSD-3"
 
@@ -1674,6 +1674,7 @@ def outputResultsAsReport(res_rollup, o, relAbu, user_taxid, display_fields, sco
 				score_fields += "\t" if "score" in display_fields else ""
 
 			if "S_SA_CL" in res_rollup[tid]:
+				if type(res_rollup[tid]["S_SA_CL"])==str and not res_rollup[tid]["S_SA_CL"].isnumeric(): res_rollup[tid]["S_SA_CL"] = "none"
 				s = "%.6f"%res_rollup[tid]["S_SA_CL"] if res_rollup[tid]["S_SA_CL"] != "none" else "none"
 				score_fields += "\t%s"%s if "score" in display_fields else ""
 			else:
@@ -1763,36 +1764,50 @@ def mergingSAM( in_sam_files, out_sam_file, min_score=0, host_tag="H", nm_range=
 		"""
 		xa_str = xa.replace("XA:Z:","")
 		idv_xas = xa_str.rstrip(";").split(";")
-		tmp = list(idv_xas)
+		idv_xas_out = []
+		cnt = 0
 
-		for idv_xa in tmp:
-			if not idv_xa.endswith( ","+str(nm) ):
+		for idv_xa in idv_xas:
+			if not idv_xa.endswith( f",{nm}" ): # not the best hit
 				idv_xa_nm = idv_xa.split(",")[-1]
-				if int(idv_xa_nm) > nm+nm_range:
-					idv_xas.remove( idv_xa )
+				if int(idv_xa_nm) <= nm+nm_range:
+					idv_xas_out.append( idv_xa )
+					cnt += 1
+			else:
+				idv_xas_out.append( idv_xa )
+				cnt += 1
 
-		if len(idv_xas):
-			return "XA:Z:"+";".join(idv_xas)+";"
+			# only takes first 30 qualified XA
+			if cnt >= 50:
+				break
+
+		if len(idv_xas_out):
+			tmp = ';'.join(idv_xas_out)
+			return f"XA:Z:{tmp};"
 		else:
 			return ""
 
-	def prepFinalSAM( sam, readname, mate, nm_range):
+	def prepFinalSAM( sam, idx, nm_range):
 		"""
 		Prepare final SAM record
 		"""
-		aln = sam[readname][mate]["SAM"]
+		(readname, mate) = idx.split("^")
+		(strand, nm, score) = sam[idx]["SNS"].split("^")
+		nm = int(nm)
+		score = int(score)
+		aln = sam[idx]["SAM"]
 		# purify XA tag
 		if "XA:Z" in aln:
 			tmp = aln.split("\t")
-			new_xa = purifyXA( tmp[-1], sam[readname][mate]["NM"], nm_range )
+			new_xa = purifyXA( tmp[-1], nm, nm_range )
 			# if XA tag exists after purification
 			if new_xa:
 				tmp[-1]=new_xa
 			else:
 				tmp = tmp[:-1]
 			# update record
-			sam[readname][mate]["SAM"] = "\t".join(tmp)
-			aln = sam[readname][mate]["SAM"]
+			sam[idx]["SAM"] = "\t".join(tmp)
+			aln = sam[idx]["SAM"]
 		
 		# filter out HOST reads
 		if "|"+host_tag in aln:
@@ -1806,10 +1821,14 @@ def mergingSAM( in_sam_files, out_sam_file, min_score=0, host_tag="H", nm_range=
 				return "ROOTSPEC"
 
 		# output sam record
-		return sam[readname][mate]["SAM"]
+		return sam[idx]["SAM"]
 
+	# sorting the sam files by sizes to save memory
+	in_sam_files.sort(key=lambda s: os.path.getsize(s))
+	# iterating the same files, the smallest file first
 	for filename in in_sam_files:
 		with open( filename ) as f:
+			if argvs.verbose: print_message( "[INFO] parsing %s..."%filename, argvs.silent, begin_t, logfile )
 			for line in f:
 				"""
 				Example input:
@@ -1871,16 +1890,20 @@ def mergingSAM( in_sam_files, out_sam_file, min_score=0, host_tag="H", nm_range=
 				# get NM
 				s_nm = search('NM:i:(\d+)', line)
 				nm   = int(s_nm.group(1))
-		
-				if readname in sam and mate in sam[readname]:
+
+				idx = f"{readname}^{mate}"
+				if idx in sam:
+					# retrieve strand, nm, score from the best alignment record
+					(r_srd, r_nm, r_score) = sam[idx]["SNS"].split("^")
+					r_nm = int(r_nm)
+					r_score = int(r_score)
+
 					# when new best score found, replace current record
-					if score > sam[readname][mate]["SCR"]:
-						sam[readname][mate]["SCR"] = score
-						sam[readname][mate]["SAM"] = line
-						sam[readname][mate]["SRD"] = strand
-						sam[readname][mate]["NM"]  = nm
+					if score > r_score:
+						sam[idx]["SAM"] = line
+						sam[idx]["SNS"] = f"{strand}^{nm}^{score}"
 					# equal best score found, add current alignments to existing record
-					elif score == sam[readname][mate]["SCR"]:
+					elif score == r_score:
 						# get strand
 						srd = "-" if samflag & 16 else "+"
 						# get XA
@@ -1892,47 +1915,55 @@ def mergingSAM( in_sam_files, out_sam_file, min_score=0, host_tag="H", nm_range=
 						pa = "%s,%s%s,%s,%s;"%(temp[2],srd,temp[3],temp[5],nm)
 						xa = xa + pa
 						# change strand if the primary alignment different from the record
-						if srd != sam[readname][mate]["SRD"]:
+						if srd != r_srd:
 							xa = xa.replace(",+", ",^")
 							xa = xa.replace(",-", ",+")
 							xa = xa.replace(",^", ",-")
 						# merge to existing record
-						if "XA:Z" in sam[readname][mate]["SAM"]:
-							sam[readname][mate]["SAM"] += xa
+						if "XA:Z" in sam[idx]["SAM"]:
+							sam[idx]["SAM"] += xa
 						else:
-							sam[readname][mate]["SAM"] += "\tXA:Z:%s"%xa
-					else:
-						pass
+							sam[idx]["SAM"] += f"\tXA:Z:{xa}"
 				else:
-					if not readname in sam:
-						sam[readname] = {}
-					if not mate in sam[readname]:
-						sam[readname][mate] = {}
+					sam[idx] = {}
+					sam[idx]["SAM"] = line
+					sam[idx]["SNS"] = f"{strand}^{nm}^{score}"
 
-					sam[readname][mate]["SCR"] = score
-					sam[readname][mate]["SAM"] = line
-					sam[readname][mate]["SRD"] = strand
-					sam[readname][mate]["NM"]  = nm
-	
+				# if the same files is the latest file and the mapper isn't minimap2,
+				# the read won't change anymore.
+				if filename == in_sam_files[-1] and argvs.readmapper != "minimap2":
+					# save and delete merged alignments
+					tol_mapped += 1
+					final_sam = prepFinalSAM(sam, idx, nm_range)
+					
+					if final_sam == "HOST":
+						# filter out HOST reads
+						tol_host += 1			
+					elif final_sam == "ROOTSPEC":
+						# filter out ROOT-specific reads
+						tol_rootspec += 1
+					else:
+						# output sam record
+						out_sam_file.write(f"{final_sam}\n")
+					
+					del sam[idx]
+
 	# save merged alignments
-	for readname in sam:
-		for mate in sam[readname]:
-			tol_mapped += 1
-			final_sam = prepFinalSAM(sam, readname, mate, nm_range)
-			
-			if final_sam == "HOST":
-				# filter out HOST reads
-				tol_host += 1			
-			elif final_sam == "ROOTSPEC":
-				# filter out ROOT-specific reads
-				tol_rootspec += 1
-			else:
-				# output sam record
-				out_sam_file.write("%s\n"%final_sam)
+	for idx in sam:
+		tol_mapped += 1
+		final_sam = prepFinalSAM(sam, idx, nm_range)
+		
+		if final_sam == "HOST":
+			# filter out HOST reads
+			tol_host += 1			
+		elif final_sam == "ROOTSPEC":
+			# filter out ROOT-specific reads
+			tol_rootspec += 1
+		else:
+			# output sam record
+			out_sam_file.write(f"{final_sam}\n")
 
 	del sam
-	gc.collect()
-
 	return (tol_host, tol_rootspec, tol_mapped)
 
 def readMapping(reads, dbs, threads, add_options, seed_length, min_score, samfile, logfile, readmapper):

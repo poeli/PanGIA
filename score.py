@@ -174,19 +174,24 @@ def clacRefMask(res_rollup, refs, bg_mask, tempdir, mb, mr, ml, mc, verbose, deb
 			maskbinstr = bin(bg_mask[ref])[2:]
 			dfmask = pd.DataFrame( list(maskbinstr) )
 			dfmask.columns = ['bg_mapped']
-			dfmask.index += (int(slen)-len(maskbinstr)+1) 
+			dfmask.index += (int(slen)-len(maskbinstr)+1)
 
 			if debug: sys.stderr.write( "[DEBUG] Printing mask...\n")
 			if debug: sys.stderr.write( str(dfmask)+"\n" )
 
 			# load depth
-			df = pd.read_csv(depthfile,
-							sep='\t',
-							names=['ref','pos','dep'],
-							usecols=['pos','dep'],
-							dtype={'pos':int,'dep':int},
-							index_col=['pos']
-			)
+			df = pd.DataFrame()
+			try:
+				df = pd.read_csv(depthfile,
+								sep='\t',
+								names=['ref','pos','dep'],
+								usecols=['pos','dep'],
+								dtype={'pos':int,'dep':int},
+								index_col=['pos']
+				)
+			except:
+				if debug: sys.stderr.write( "[DEBUG] Failure to load depth file: %s\n"%depthfile )
+				continue
 
 			if debug: sys.stderr.write( "[DEBUG] Printing base-by-base depths in target dataset...\n")
 			if debug: sys.stderr.write( str(df)+"\n" )
